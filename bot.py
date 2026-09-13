@@ -1,14 +1,13 @@
 import logging
 import os
-import re
+import random
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
-    filters,
 )
 
 logging.basicConfig(
@@ -19,49 +18,132 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
+QUESTIONS = [
+    {
+        "question": "What is the capital of France?",
+        "options": ["Berlin", "Paris", "Madrid", "Rome"],
+        "correct": 1,
+    },
+    {
+        "question": "Which planet is known as the Red Planet?",
+        "options": ["Venus", "Mars", "Jupiter", "Saturn"],
+        "correct": 1,
+    },
+    {
+        "question": "Who wrote 'Romeo and Juliet'?",
+        "options": ["Charles Dickens", "Mark Twain", "William Shakespeare", "Leo Tolstoy"],
+        "correct": 2,
+    },
+    {
+        "question": "What is the largest ocean on Earth?",
+        "options": ["Atlantic", "Indian", "Arctic", "Pacific"],
+        "correct": 3,
+    },
+    {
+        "question": "How many continents are there?",
+        "options": ["5", "6", "7", "8"],
+        "correct": 2,
+    },
+    {
+        "question": "What is the chemical symbol for gold?",
+        "options": ["Go", "Gd", "Au", "Ag"],
+        "correct": 2,
+    },
+    {
+        "question": "Which country hosted the 2016 Summer Olympics?",
+        "options": ["China", "UK", "Brazil", "Japan"],
+        "correct": 2,
+    },
+    {
+        "question": "What is the smallest prime number?",
+        "options": ["0", "1", "2", "3"],
+        "correct": 2,
+    },
+]
+
+user_scores: dict[int, dict[str, int]] = {}
+user_current_question: dict[int, dict] = {}
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "👋 Hi! I'm Word Counter Bot.\n\n"
-        "Send me any text and I'll tell you:\n"
-        "• Word count\n"
-        "• Character count (with and without spaces)\n"
-        "• Sentence count\n\n"
-        "Just type or paste text below to try it out!"
+        "🧠 Welcome to Quiz Bot!\n\n"
+        "Test your knowledge with fun trivia questions.\n\n"
+        "Commands:\n"
+        "/quiz - get a new question\n"
+        "/score - see your score\n"
+        "/help - show this help\n\n"
+        "Send /quiz to start!"
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Just send me any message and I'll count it for you.\n"
-        "Commands:\n"
-        "/start - welcome message\n"
-        "/help - show this help"
+        "🧠 Quiz Bot Commands:\n"
+        "/quiz - get a new trivia question\n"
+        "/score - check your current score\n"
+        "/help - show this message"
     )
 
 
-async def count_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text
+async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    question_data = random.choice(QUESTIONS)
+    user_current_question[user_id] = question_data
 
-    if not text or not text.strip():
-        await update.message.reply_text("Send me some text and I'll count it!")
+    options = question_data["options"]
+    keyboard = [
+        [InlineKeyboardButton(opt, callback_data=str(i))]
+        for i, opt in enumerate(options)
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"❓ {question_data['question']}",
+        reply_markup=reply_markup,
+    )
+
+
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+
+    question_data = user_current_question.get(user_id)
+    if not question_data:
+        await query.edit_message_text("This question expired. Send /quiz for a new one!")
         return
 
-    words = text.split()
-    word_count = len(words)
-    char_count_with_spaces = len(text)
-    char_count_no_spaces = len(text.replace(" ", "").replace("\n", ""))
-    sentence_count = len(re.findall(r"[.!?]+", text)) or (1 if text.strip() else 0)
+    selected_index = int(query.data)
+    correct_index = question_data["correct"]
+    options = question_data["options"]
 
-    reply = (
-        "📊 *Text stats*\n\n"
-        f"📝 Words: {word_count}\n"
-        f"🔤 Characters (with spaces): {char_count_with_spaces}\n"
-        f"🔡 Characters (no spaces): {char_count_no_spaces}\n"
-        f"📖 Sentences: {sentence_count}"
+    scores = user_scores.setdefault(user_id, {"score": 0, "answered": 0})
+    scores["answered"] += 1
+
+    if selected_index == correct_index:
+        scores["score"] += 1
+        result_text = "✅ Correct!"
+    else:
+        result_text = f"❌ Wrong! The correct answer was: {options[correct_index]}"
+
+    await query.edit_message_text(
+        f"❓ {question_data['question']}\n\n"
+        f"{result_text}\n\n"
+        f"Score: {scores['score']}/{scores['answered']}\n\n"
+        "Send /quiz for another question!"
     )
 
-    await update.message.reply_text(reply, parse_mode="Markdown")
+    user_current_question.pop(user_id, None)
+
+
+async def show_score(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    scores = user_scores.get(user_id, {"score": 0, "answered": 0})
+    await update.message.reply_text(
+        f"📊 Your score: {scores['score']}/{scores['answered']}\n"
+        "Send /quiz to keep playing!"
+    )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -79,12 +161,12 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, count_words)
-    )
+    application.add_handler(CommandHandler("quiz", send_question))
+    application.add_handler(CommandHandler("score", show_score))
+    application.add_handler(CallbackQueryHandler(handle_answer))
     application.add_error_handler(error_handler)
 
-    logger.info("Bot starting with polling...")
+    logger.info("Quiz bot starting with polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
